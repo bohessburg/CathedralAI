@@ -73,17 +73,7 @@ class Piece:
         return (f"Piece(name={self.name!r}, size={self.size}, "
                 f"count={self.count}, orientations={len(self.orientations)})")
 
-
-# ---------------------------------------------------------------------------
-# Piece registry — DEFINE YOUR PIECES HERE.
-#
-# Use Piece.from_grid(...). Player pieces fit a 3x3 grid; the Cathedral
-# needs 4x4. `count` is how many each player owns (most are 1; a few are 2).
-# The Cathedral is a single neutral piece (count stays 1, owned by neither).
-#
-# Example shape (delete once you add real ones):
-#   Piece.from_grid("Inn", ["11", "10"], count=2),
-# ---------------------------------------------------------------------------
+# -- Piece Registry --
 
 PIECES: list[Piece] = [
     Piece.from_grid("Tavern", ['1'], count=2),
@@ -98,9 +88,6 @@ PIECES: list[Piece] = [
     Piece.from_grid("Castle", ['111','101'], count=1),
     Piece.from_grid("Tower", ['011','110','100'], count=1),
     Piece.from_grid("Cathedral", ['010','111','010','010'], count=1, neutral=True)
-
-
-    # TODO: add piece definitions
 ]
 
 
