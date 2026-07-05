@@ -115,8 +115,18 @@ def repl() -> None:
                 print("  illegal move")
                 continue
             history.append(copy.deepcopy(state))
+            mover = state.to_move
             state.apply(move)
+            caps = state.resolve_captures(mover)
             draw(state)
+            for region, captured in caps:
+                who = "WHITE" if mover == WHITE else "BLACK"
+                sq = f"{len(region)} square" + ("s" if len(region) != 1 else "")
+                if captured is None:
+                    print(f"  {who} claimed {sq}")
+                else:
+                    _, name = captured
+                    print(f"  {who} claimed {sq} and captured {name}")
         else:
             print("  unknown command (try 'help')")
 

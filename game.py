@@ -59,6 +59,14 @@ class GameState:
             for player in PLAYERS
         }
         self.cathedral_placed = False
+        self.cathedral_captured = False
+        self.placed_count = {WHITE: 0, BLACK: 0}  # placements made, for the first-move rule
+        # Piece identity per cell: piece_at[r][c] is a placement id, or None.
+        # Lets us count *distinct* buildings in a region (adjacent same-color
+        # buildings are allowed) and return a captured one to its owner.
+        self.piece_at = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        self.placements: dict[int, tuple] = {}   # id -> (owner|None, name, cells)
+        self._next_id = 0
 
     def piece(self, player: int, name: str) -> Piece:
         if name == CATHEDRAL_NAME:
@@ -97,12 +105,6 @@ class GameState:
         return True
 
     def legal_moves(self, player: int | None = None):
-        """Yield every board-legal placement for `player` (default: side to move).
-
-        Naive enumeration: each available piece, each unique orientation, every
-        anchor; `is_legal` filters. Fine for the prototype (~thousands of checks);
-        a bitboard core will make this far cheaper later. The mandatory Cathedral
-        opening is enforced by is_legal; broader turn-order is the loop's job."""
         player = self.to_move if player is None else player
 
         names = [n for n, k in self.remaining[player].items() if k > 0]
@@ -118,17 +120,125 @@ class GameState:
                         if self.is_legal(move):
                             yield move
 
+    def find_captures(self, player: int) -> list[tuple[frozenset, int | None]]:
+        N = BOARD_SIZE
+        B = self.board
+        own = (OWNED[player], TERRITORY[player])
+        opp_territory = TERRITORY[BLACK if player == WHITE else WHITE]
+        seen = [[False] * N for _ in range(N)]
+        captures = []
+
+        def neighbors(r, c):
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < N and 0 <= nc < N:
+                    yield nr, nc
+
+        for sr in range(N):
+            for sc in range(N):
+                if seen[sr][sc] or B[sr][sc] in own:
+                    continue
+                # Flood the region C: everything that is not player's wall.
+                comp, stack = [], [(sr, sc)]
+                seen[sr][sc] = True
+                while stack:
+                    r, c = stack.pop()
+                    comp.append((r, c))
+                    for nr, nc in neighbors(r, c):
+                        if not seen[nr][nc] and B[nr][nc] not in own:
+                            seen[nr][nc] = True
+                            stack.append((nr, nc))
+                cset = set(comp)
+
+                # Contents: count distinct foreign *buildings* (incl. cathedral).
+                # Opponent territory does not count -- it is reclaimed on capture.
+                foreign = set()
+                for r, c in comp:
+                    val = B[r][c]
+                    if val != EMPTY and val != opp_territory:  # a piece cell
+                        pid = self.piece_at[r][c]
+                        if pid is not None and self.placements[pid][0] != player:
+                            foreign.add(pid)
+                if len(foreign) > 1:
+                    continue
+
+                # A region touching all four edges is the open board itself
+                # (bounded by the frame on every side), never an enclosure.
+                edges = set()
+                for r, c in comp:
+                    if r == 0: edges.add("T")
+                    if r == N - 1: edges.add("B")
+                    if c == 0: edges.add("L")
+                    if c == N - 1: edges.add("R")
+                if len(edges) == 4:
+                    continue
+
+                # Reachable from the board edge "around" C (through non-C cells).
+                reach = [[False] * N for _ in range(N)]
+                rstack = []
+                for i in range(N):
+                    for r, c in ((0, i), (N - 1, i), (i, 0), (i, N - 1)):
+                        if (r, c) not in cset and not reach[r][c]:
+                            reach[r][c] = True
+                            rstack.append((r, c))
+                while rstack:
+                    r, c = rstack.pop()
+                    for nr, nc in neighbors(r, c):
+                        if not reach[nr][nc] and (nr, nc) not in cset:
+                            reach[nr][nc] = True
+                            rstack.append((nr, nc))
+
+                walled = any(
+                    B[nr][nc] in own and reach[nr][nc]
+                    for r, c in comp for nr, nc in neighbors(r, c)
+                    if (nr, nc) not in cset
+                )
+                if not walled:
+                    continue
+
+                region = frozenset((r, c) for r, c in comp
+                                   if B[r][c] in (EMPTY, opp_territory))
+                captured = next(iter(foreign)) if foreign else None
+                captures.append((region, captured))
+        return captures
+
     def apply(self, move: Move) -> None:
         """Stamp the piece onto the board. (Capture/territory handled later.)"""
+        cells = self.absolute_cells(move)
         if move.name == CATHEDRAL_NAME:
-            value = CATHEDRAL
+            value, owner = CATHEDRAL, None
             self.cathedral_placed = True
         else:
-            value = OWNED[move.player]
+            value, owner = OWNED[move.player], move.player
             self.remaining[move.player][move.name] -= 1
-        for r, c in self.absolute_cells(move):
+        pid = self._next_id
+        self._next_id += 1
+        self.placements[pid] = (owner, move.name, frozenset(cells))
+        for r, c in cells:
             self.board[r][c] = value
+            self.piece_at[r][c] = pid
+        self.placed_count[move.player] += 1
         self.to_move = BLACK if move.player == WHITE else WHITE
+
+    def resolve_captures(self, player: int) -> list[tuple[frozenset, tuple | None]]:
+        terr = TERRITORY[player]
+        results = []
+        for region, pid in self.find_captures(player):
+            for r, c in region:
+                self.board[r][c] = terr
+            captured = None
+            if pid is not None:
+                owner, name, cells = self.placements.pop(pid)
+                for r, c in cells:
+                    self.board[r][c] = terr
+                    self.piece_at[r][c] = None
+                if owner is None:
+                    self.cathedral_captured = True
+                else:
+                    self.remaining[owner][name] += 1
+                captured = (owner, name)
+            results.append((region, captured))
+        return results
 
     def render(self) -> str:
         glyph = {EMPTY: ".", WHITE: "W", BLACK: "B", CATHEDRAL: "C",
